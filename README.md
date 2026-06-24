@@ -77,8 +77,50 @@ ss -lnutp | grep 5514                          # confirm rsyslog owns the port
 
 ## Requirements
 
-- Ubuntu (tested on 24.04 LTS); `apt`, `systemd`, root.
+- Ubuntu (tested on 24.04 LTS "noble"); `apt`, `systemd`, root.
 - Outbound HTTPS to your HEC endpoint.
+
+## rsyslog version matters
+
+rsyslog config syntax and module behavior are **version-specific**. Ubuntu
+24.04 LTS ships **rsyslog 8.2312.0**, so this tool targets the rsyslog
+**v8-stable** docs. Check what you actually have first:
+
+```bash
+rsyslogd -v            # 8.2312.0 on Ubuntu 24.04 LTS
+apt policy rsyslog
+```
+
+If you're on a different Ubuntu release, confirm the directives used here
+(`module(load="imudp" ...)`, `rcvbufSize`, `omprog`) against the matching docs.
+
+- rsyslog 8-stable docs: https://www.rsyslog.com/doc/v8-stable/
+- `imudp` (UDP input, `rcvbufSize`): https://www.rsyslog.com/doc/v8-stable/configuration/modules/imudp.html
+- `omprog` (how the HEC helper is run): https://www.rsyslog.com/doc/v8-stable/configuration/modules/omprog.html
+- Ubuntu noble package (exact version): https://packages.ubuntu.com/noble/rsyslog
+
+## Troubleshooting
+
+Look here first — local files are written before anything is forwarded, so they
+separate "rsyslog isn't receiving" from "HEC isn't accepting":
+
+```bash
+tail -f /var/log/sdl-rsyslog/*.log              # are events arriving + routing?
+cat /var/log/sdl-rsyslog/hec-forwarder.log      # helper's HEC send errors (if any)
+journalctl -u rsyslog -e                        # rsyslog service log
+ss -lnutp | grep 5514                            # is rsyslog bound to the port?
+```
+
+| Symptom | Likely cause / fix |
+|---|---|
+| Installer halts: "port 5514 in use by `<app>`" | Another process owns the port. Stop it, or re-run with `SDL_SYSLOG_PORT=<other>`. |
+| Local logs fill, but **nothing reaches SDL** | HEC token/endpoint wrong, or no outbound HTTPS. Check `hec-forwarder.log`. |
+| **Remote** devices send but nothing arrives (local test works) | Host firewall. The installer auto-allows `5514/udp+tcp` in ufw and pre-stages the rule even when ufw is *off* — but verify: `ufw status verbose` and `ufw show added`. UDP drops are **silent** (no ack), so a closed port looks like "nothing happening." |
+| Was working, broke after a reboot/update | A reboot or package update can **re-enable ufw**. Because the allow rule is pre-staged, `5514` should still pass — confirm with `ufw show added`. |
+| UDP events drop under bursts | Receive buffer clamped. On an unprivileged LXC, raise `net.core.rmem_max` on the **host**: `sysctl -w net.core.rmem_max=16777216` and persist in `/etc/sysctl.d/`. |
+| `rsyslog` won't start / was disabled | The installer unmasks + enables it. Check `systemctl status rsyslog` and the validation in `/tmp/rsyslog-sdl-validate.log`. |
+| Python/helper errors | The helper runs under `/usr/bin/python3 -I` (isolated, stdlib-only) to dodge a polluted Python env. Override the interpreter with `SDL_PYTHON=/path/to/python3`. |
+| Events show wrong/no time in SDL | The HEC `time` is taken from an `epoch.nanos` prefix in Meraki-style bodies, else rsyslog's `timereported`. |
 
 ## Tuning knobs (env vars)
 
@@ -90,3 +132,8 @@ ss -lnutp | grep 5514                          # confirm rsyslog owns the port
 | `SDL_COLLECTOR_IP` | auto | pin the advertised collector IP |
 | `SDL_UDP_RCVBUF` | `8m` | imudp socket buffer request |
 | `SDL_UDP_RMEM_MAX` | `16777216` | host `net.core.rmem_max` target |
+| `SDL_PYTHON` | `/usr/bin/python3` | interpreter for the HEC helper |
+
+## License
+
+MIT — see [LICENSE](LICENSE).
