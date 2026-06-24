@@ -1,0 +1,24 @@
+{
+  "_comment": "Example of one HEC event the helper POSTs (illustrative values). 'host' becomes SDL serverHost and is the ORIGINATING device, never the collector. The collector is captured in the metadata.log.collector_* fields. Some fields you may see in SDL (e.g. field1/field2/Log Provider) come from the SDL-side parser bound to the sourcetype, not from this payload.",
+  "time": 1782156606.447,
+  "host": "ap-01",
+  "source": "/var/log/sdl-rsyslog/meraki.log",
+  "sourcetype": "cisco_meraki",
+  "event": "1782156606.447638852 ap-01 events type=association radio='1' vap='2' client_mac='AA:BB:CC:DD:EE:04' band='5' channel='140'",
+  "fields": {
+    "s1.source_type": "meraki",
+    "dataSource.name": "Cisco Meraki",
+    "dataSource.vendor": "Cisco",
+    "dataSource.category": "security",
+    "metadata.product.name": "Meraki",
+    "metadata.product.vendor_name": "Cisco",
+    "metadata.log.collector": "rsyslog",
+    "metadata.log.collector_host": "collector.example.lan",
+    "metadata.log.collector_ip": "10.0.0.10",
+    "collector.fromhost_ip": "10.0.0.55",
+    "syslog.hostname": "ap-01",
+    "log.file.name": "meraki.log",
+    "log.file.path": "/var/log/sdl-rsyslog/meraki.log",
+    "rsyslog.timereported": "1782156606"
+  }
+}

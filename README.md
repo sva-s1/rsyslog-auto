@@ -72,6 +72,18 @@ No secrets are baked into the script; it's safe to host publicly.
   the host; the installer detects this and prints the one host-side command to
   run — it never pretends a clamp didn't happen.
 
+## See it at rest
+
+The installer builds the rsyslog config on the fly, but reference copies live in
+[`examples/`](examples/) so you can read them without running anything:
+
+- [`examples/60-sdl-hec.conf`](examples/60-sdl-hec.conf) — the generated rsyslog config.
+- [`examples/sample-hec-event.json`](examples/sample-hec-event.json) — one HEC event as sent.
+
+Note: extra fields you may see on an event in SDL (e.g. `field1`, `field2`,
+`Log Provider`) are added by the **SDL-side parser** bound to the sourcetype, not
+by this pipeline — the payload above is exactly what we send.
+
 ## Verifying
 
 The install runs its own smoke test (UUID-tagged events across all three routes,
