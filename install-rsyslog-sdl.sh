@@ -24,7 +24,7 @@ PYBIN="${SDL_PYTHON:-/usr/bin/python3}"          # absolute interpreter for the 
 
 log() { printf '[%s] %s\n' "$(date -Is)" "$*"; }
 fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
-need_root() { [[ ${EUID:-$(id -u)} -eq 0 ]] || fail "run as root"; }
+need_root() { [[ ${EUID:-$(id -u)} -eq 0 ]] || fail "must run as root. Re-run with sudo — e.g.  curl -fsSL <url> | sudo bash   or   sudo ./install-rsyslog-sdl.sh"; }
 
 write_env_template() {
   # Drop a fill-in-the-blanks .env next to where the installer was run so a
