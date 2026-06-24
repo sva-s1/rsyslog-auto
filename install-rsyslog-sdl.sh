@@ -20,6 +20,7 @@ SOURCE_ENV="./.env"
 SYSCTL_FILE="/etc/sysctl.d/60-sdl-rsyslog.conf"
 UDP_RCVBUF="${SDL_UDP_RCVBUF:-8m}"               # imudp SO_RCVBUF request
 UDP_RMEM_MAX="${SDL_UDP_RMEM_MAX:-16777216}"     # 16 MiB host cap the above needs
+PYBIN="${SDL_PYTHON:-/usr/bin/python3}"          # absolute interpreter for the helper
 
 log() { printf '[%s] %s\n' "$(date -Is)" "$*"; }
 fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
@@ -381,6 +382,15 @@ write_rsyslog_config() {
   local collector_host
   collector_host="$(hostname -f 2>/dev/null || hostname)"
 
+  # Run the helper with an absolute interpreter in isolated mode (-I): ignores
+  # PYTHONPATH, PYTHON* env, the user site-dir, and cwd on sys.path, and bypasses
+  # any pyenv/conda shim on PATH. The helper is stdlib-only, so this is more
+  # robust than a venv and needs no extra packages or AppArmor entries.
+  local pybin="$PYBIN"
+  [[ -x "$pybin" ]] || pybin="$(command -v python3 || echo /usr/bin/python3)"
+  local pyrun="$pybin -I $HELPER"
+  log "HEC helper will run as: $pyrun <route> <sourcetype> <logfile>"
+
   cat > "$CONF" <<EOF
 # SDL mixed Cisco/Meraki syslog ingest on a single port.
 # Managed by install-rsyslog-sdl.sh. Local copies are in $LOG_DIR.
@@ -411,7 +421,7 @@ ruleset(name="sdl_ingest") {
   # Catalyst IOS/NX-ish body signature: %FACILITY-SEV-MNEMONIC:
   if re_match(msg, "%[A-Z0-9_]+-[0-9]+-[A-Z0-9_]+:") then {
     action(type="omfile" file="$LOG_DIR/catalyst.log" template="sdlLocalLine")
-    action(type="omprog" name="sdl_hec_catalyst" binary="$HELPER catalyst cisco_catalyst $LOG_DIR/catalyst.log" template="sdlProgLine")
+    action(type="omprog" name="sdl_hec_catalyst" binary="$pyrun catalyst cisco_catalyst $LOG_DIR/catalyst.log" template="sdlProgLine")
     stop
   }
 
@@ -420,13 +430,13 @@ ruleset(name="sdl_ingest") {
   # as RFC3164/RFC5424, so body matching is safer than hostname/IP fields.
   if msg contains " events type=" then {
     action(type="omfile" file="$LOG_DIR/meraki.log" template="sdlLocalLine")
-    action(type="omprog" name="sdl_hec_meraki" binary="$HELPER meraki cisco_meraki $LOG_DIR/meraki.log" template="sdlProgLine")
+    action(type="omprog" name="sdl_hec_meraki" binary="$pyrun meraki cisco_meraki $LOG_DIR/meraki.log" template="sdlProgLine")
     stop
   }
 
   # Catch-all: still write locally and forward to SDL unknown parser.
   action(type="omfile" file="$LOG_DIR/unknown.log" template="sdlLocalLine")
-  action(type="omprog" name="sdl_hec_unknown" binary="$HELPER unknown lab_unknown $LOG_DIR/unknown.log" template="sdlProgLine")
+  action(type="omprog" name="sdl_hec_unknown" binary="$pyrun unknown lab_unknown $LOG_DIR/unknown.log" template="sdlProgLine")
 }
 EOF
   # The heredoc uses STX placeholders so bash does not expand rsyslog variables.
