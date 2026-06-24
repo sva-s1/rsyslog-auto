@@ -33,25 +33,39 @@ write_env_template() {
   umask 077
   cat > "$SOURCE_ENV" <<'EOF'
 # SDL credentials for install-rsyslog-sdl.sh.
-# Fill in the two required values below, then re-run the same install command.
-SDL_HEC_ENDPOINT=https://YOUR-SDL-HOST/services/collector/event
+# Only the HEC write token is required — endpoints default to the US1 region
+# (ingest.us1.sentinelone.net / xdr.us1.sentinelone.net).
 SDL_HEC_TOKEN=PASTE-YOUR-HEC-WRITE-TOKEN-HERE
-# Optional: enables post-install upstream validation. Leave blank to skip.
-SDL_READ_ENDPOINT=
+# Optional: read token enables post-install upstream validation.
 SDL_READ_TOKEN=
+# Optional: region if not US1 (e.g. eu1, ap1) -> ingest.<region>.sentinelone.net
+#SDL_REGION=us1
+# Optional: override the full endpoints (only for non-standard hosts).
+#SDL_HEC_ENDPOINT=
+#SDL_READ_ENDPOINT=
 EOF
 }
 
+resolve_endpoints() {
+  # A customer supplies only the token; endpoints default to the SentinelOne SDL
+  # hosts for SDL_REGION (us1 by default). Explicit SDL_HEC_ENDPOINT /
+  # SDL_READ_ENDPOINT always win. ingest.<region> = HEC/addEvents ingest;
+  # xdr.<region> = the read/query (/api/query) API.
+  local region="${SDL_REGION:-us1}"
+  : "${SDL_HEC_ENDPOINT:=https://ingest.${region}.sentinelone.net/services/collector/event}"
+  : "${SDL_READ_ENDPOINT:=https://xdr.${region}.sentinelone.net}"
+}
+
 load_or_prompt_env() {
-  # Credential precedence, so the public one-liner works every way it
-  # might be run:
-  #   1. exported env vars  ->  curl ... | sudo SDL_HEC_TOKEN=x SDL_HEC_ENDPOINT=y bash
+  # Credential precedence, so the public one-liner works every way it might run:
+  #   1. exported env var   ->  curl ... | sudo SDL_HEC_TOKEN=x bash
   #   2. ./.env in CWD      ->  drop a .env, then curl ... | sudo bash
   #   3. prior install      ->  re-run with no input at all
   #   4. interactive prompt ->  answer one masked token prompt
   #   5. none + no TTY      ->  write a .env template and tell them what to fill
-  if [[ -n "${SDL_HEC_ENDPOINT:-}" && -n "${SDL_HEC_TOKEN:-}" ]]; then
-    log "Using SDL credentials from the environment (no prompts)"
+  # The customer never types an endpoint (resolve_endpoints defaults them).
+  if [[ -n "${SDL_HEC_TOKEN:-}" ]]; then
+    log "Using SDL token from the environment (no prompts)"
   elif [[ -f "$SOURCE_ENV" ]]; then
     log "Loading credentials from $SOURCE_ENV (no prompts)"
     set -a; . "$SOURCE_ENV"; set +a
@@ -61,21 +75,19 @@ load_or_prompt_env() {
   elif (exec </dev/tty) 2>/dev/null; then
     # /dev/tty can exist as a node yet not be openable (headless curl|bash over
     # a non-interactive ssh). Test by actually opening it, not with -e.
-    log "No credentials found; prompting (paste the values from SDL)"
-    read -r -p "SDL HEC endpoint (e.g. https://.../services/collector/event): " SDL_HEC_ENDPOINT </dev/tty
+    log "No credentials found; prompting for the HEC token (endpoints default to ${SDL_REGION:-us1})"
     read -r -s -p "SDL HEC write token: " SDL_HEC_TOKEN </dev/tty; printf '\n' >/dev/tty
-    read -r -p "SDL read endpoint or /api/query URL (optional, Enter to skip): " SDL_READ_ENDPOINT </dev/tty || true
-    read -r -s -p "SDL read token (optional, Enter to skip): " SDL_READ_TOKEN </dev/tty || true; printf '\n' >/dev/tty
+    read -r -s -p "SDL read token (optional, Enter to skip validation): " SDL_READ_TOKEN </dev/tty || true; printf '\n' >/dev/tty
   else
     write_env_template
-    fail "No SDL credentials supplied. Wrote a template to $(pwd)/$SOURCE_ENV — open it, set SDL_HEC_TOKEN and SDL_HEC_ENDPOINT, then re-run the same command."
+    fail "No SDL token supplied. Wrote a template to $(pwd)/$SOURCE_ENV — set SDL_HEC_TOKEN, then re-run the same command."
   fi
 
-  # Reject empty or untouched-template values with an actionable message.
-  case "${SDL_HEC_ENDPOINT:-}" in ''|*YOUR-SDL-HOST*) fail "SDL_HEC_ENDPOINT is not set (still the placeholder?). Edit $SOURCE_ENV and re-run." ;; esac
+  resolve_endpoints
   case "${SDL_HEC_TOKEN:-}" in ''|*PASTE-YOUR-HEC*) fail "SDL_HEC_TOKEN is not set (still the placeholder?). Edit $SOURCE_ENV and re-run." ;; esac
-  if [[ -z "${SDL_READ_ENDPOINT:-}" || -z "${SDL_READ_TOKEN:-}" ]]; then
-    log "WARNING: SDL_READ_ENDPOINT/SDL_READ_TOKEN missing; install will skip SDL API validation and only validate local files."
+  log "HEC ingest endpoint: $SDL_HEC_ENDPOINT"
+  if [[ -z "${SDL_READ_TOKEN:-}" ]]; then
+    log "WARNING: SDL_READ_TOKEN missing; install will validate local files only (skips upstream /api/query check)."
   fi
 }
 
@@ -216,7 +228,10 @@ def load_env(path):
 source_type = sys.argv[1] if len(sys.argv) > 1 else 'unknown'
 sourcetype = sys.argv[2] if len(sys.argv) > 2 else 'lab_unknown'
 hec_source = sys.argv[3] if len(sys.argv) > 3 else f'/var/log/sdl-rsyslog/{source_type}.log'
-collector = socket.getfqdn() or socket.gethostname()
+# The collector's own hostname is captured as a FIELD (metadata.log.collector_host)
+# so you can see what relayed/shipped the event — but it is NOT used for the HEC
+# 'host' (see hec_host below), which would wrongly surface the relay as serverHost.
+collector_host = socket.getfqdn() or socket.gethostname()
 
 def primary_lan_ip():
     # Resolve the collector's own routable LAN IP without shelling out. A UDP
@@ -297,6 +312,21 @@ def collector_ip_now():
             _ip_cache['ip'], _ip_cache['ts'] = ip, now
     return _ip_cache['ip']
 
+HOST_OVERRIDE = env.get('SDL_HEC_HOST') or os.environ.get('SDL_HEC_HOST')
+
+def hec_host(sysloghost, fromhost):
+    # The HEC top-level 'host' becomes SDL's serverHost. Use the ORIGINATING
+    # device, never the collector/relay hostname: using the relay would tag every
+    # event with the relay (masking the real source) and leak the collector's
+    # name (e.g. noble.transformers.lan). Prefer a real syslog hostname; fall back
+    # to the sender IP. Set SDL_HEC_HOST to force a fixed value instead.
+    if HOST_OVERRIDE:
+        return HOST_OVERRIDE
+    h = (sysloghost or '').strip()
+    if h and h.lower() not in ('localhost', 'localhost.localdomain', '-'):
+        return h
+    return fromhost or h or 'unknown'
+
 headers = {'Content-Type': 'application/json', 'Authorization': 'Splunk ' + (token or '')}
 
 def post(payload):
@@ -335,13 +365,14 @@ for line in sys.stdin:
             'syslog.hostname': sysloghost,
             'rsyslog.timereported': timereported,
             'metadata.log.collector': 'rsyslog',
+            'metadata.log.collector_host': collector_host,
         }
         cip = collector_ip_now()
         if cip:
             fields['metadata.log.collector_ip'] = cip
         fields.update(ROUTE_FIELDS.get(source_type, {}))
         payload = {
-            'host': collector,
+            'host': hec_host(sysloghost, fromhost),
             'source': hec_source,
             'sourcetype': sourcetype,
             'event': message,
@@ -648,7 +679,7 @@ for attempt in range(1, 7):
             print(f"SDL validation: filter={filter_expr!r} status={data.get('status')} matches={len(matches)}")
             for m in matches[-10:]:
                 attrs = m.get('attributes', {})
-                print({k: attrs.get(k) for k in ['host','source','sourcetype','s1.source_type','dataSource.name','dataSource.vendor','metadata.product.name','metadata.product.vendor_name','metadata.log.collector','metadata.log.collector_ip','log.file.name','log.file.path','collector.fromhost_ip','syslog.hostname','rsyslog.timereported'] if attrs.get(k)}, m.get('message','')[:180])
+                print({k: attrs.get(k) for k in ['host','source','sourcetype','s1.source_type','dataSource.name','dataSource.vendor','metadata.product.name','metadata.product.vendor_name','metadata.log.collector','metadata.log.collector_ip','metadata.log.collector_host','log.file.name','log.file.path','collector.fromhost_ip','syslog.hostname','rsyslog.timereported'] if attrs.get(k)}, m.get('message','')[:180])
             sys.exit(0)
         print(f"SDL validation attempt {attempt}: matches={len(matches)}; waiting for 4 UUID events")
     except Exception as e:

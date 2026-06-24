@@ -1,17 +1,20 @@
 # rsyslog-auto
 
 One-shot installer that turns a fresh Ubuntu host (bare metal, VM, or LXC) into a
-self-contained **rsyslog → Splunk-style HEC** collector for mixed Cisco-ish
-syslog arriving on a single port. It removes any prior OpenTelemetry Collector
-setup, configures rsyslog, writes local rotated copies, forwards every event to
-your HEC endpoint, and validates itself end-to-end — in one run, no editing.
+self-contained **rsyslog → HEC** collector for mixed Cisco-ish syslog arriving on
+a single port. It removes any prior OpenTelemetry Collector setup, configures
+rsyslog, writes local rotated copies, forwards every event to your HEC endpoint,
+and validates itself end-to-end — in one run, no editing.
 
 ## Quick start
+
+The customer supplies only the **HEC write token** — endpoints default to the
+US1 region (`ingest.us1.sentinelone.net` / `xdr.us1.sentinelone.net`).
 
 ```bash
 # Fully non-interactive:
 curl -fsSL https://raw.githubusercontent.com/sva-s1/rsyslog-auto/main/install-rsyslog-sdl.sh \
-  | sudo SDL_HEC_TOKEN=<write-token> SDL_HEC_ENDPOINT=https://<your-hec-host>/services/collector/event bash
+  | sudo SDL_HEC_TOKEN=<write-token> bash
 ```
 
 Or drop a `.env` next to where you run it and let the installer read it:
@@ -19,26 +22,29 @@ Or drop a `.env` next to where you run it and let the installer read it:
 ```bash
 cd /etc/rsyslog.d
 sudo tee .env >/dev/null <<'EOF'
-SDL_HEC_ENDPOINT=https://<your-hec-host>/services/collector/event
 SDL_HEC_TOKEN=<write-token>
-# optional — enables upstream read-back validation after install:
-SDL_READ_ENDPOINT=
+# optional — read token enables upstream read-back validation after install:
 SDL_READ_TOKEN=
+# optional — region if not US1 (e.g. eu1, ap1):
+#SDL_REGION=us1
 EOF
 curl -fsSL https://raw.githubusercontent.com/sva-s1/rsyslog-auto/main/install-rsyslog-sdl.sh | sudo bash
 ```
 
-If no credentials are found and there's no terminal to prompt at, the installer
-writes a fill-in-the-blanks `.env` template and exits telling you what to set.
+If no token is found and there's no terminal to prompt at, the installer writes a
+fill-in-the-blanks `.env` template and exits telling you what to set.
 
 ## Credential precedence
 
-Resolved in this order, so the one-liner works however you run it:
+The only required input is the HEC write token (endpoints are derived from
+`SDL_REGION`, default `us1`; set `SDL_HEC_ENDPOINT`/`SDL_READ_ENDPOINT` to
+override). The token is resolved in this order, so the one-liner works however
+you run it:
 
-1. Exported env vars (`SDL_HEC_TOKEN` / `SDL_HEC_ENDPOINT`)
+1. Exported env var (`SDL_HEC_TOKEN`)
 2. `./.env` in the current directory
-3. Credentials from a previous install (`/etc/rsyslog.d/sdl-hec.env`) — re-run with zero input
-4. Interactive prompt
+3. A previous install (`/etc/rsyslog.d/sdl-hec.env`) — re-run with zero input
+4. Interactive prompt (one masked token entry)
 5. None + headless → writes a template `.env` and exits with instructions
 
 No secrets are baked into the script; it's safe to host publicly.
@@ -55,9 +61,12 @@ No secrets are baked into the script; it's safe to host publicly.
 - **Local copies** in `/var/log/sdl-rsyslog/{catalyst,meraki,unknown}.log` with a
   12-month `logrotate` policy.
 - **HEC forwarding** via a small Python helper (`omprog`) that emits one JSON
-  event per line, stamping `metadata.log.collector_ip` with the collector's
-  own LAN IP (auto-detected at runtime, refreshed periodically; override with
-  `SDL_COLLECTOR_IP`).
+  event per line. The HEC `host` (→ SDL **serverHost**) is the **originating
+  device** (its syslog hostname, falling back to the sender IP), never the relay
+  — so events attribute to the real appliance, not the collector. The collector
+  is recorded separately in fields: `metadata.log.collector_host` (its hostname)
+  and `metadata.log.collector_ip` (its LAN IP, auto-detected and refreshed;
+  override with `SDL_COLLECTOR_IP`). Force a fixed `host` with `SDL_HEC_HOST`.
 - **UDP receive buffer** tuning (`rcvbufSize` + `net.core.rmem_max`) to reduce
   silent drops during bursts. On an unprivileged LXC the kernel cap is owned by
   the host; the installer detects this and prints the one host-side command to
@@ -126,10 +135,13 @@ ss -lnutp | grep 5514                            # is rsyslog bound to the port?
 
 | Var | Default | Purpose |
 |---|---|---|
-| `SDL_HEC_ENDPOINT` / `SDL_HEC_TOKEN` | — | HEC write target (required) |
-| `SDL_READ_ENDPOINT` / `SDL_READ_TOKEN` | — | optional upstream read-back validation |
+| `SDL_HEC_TOKEN` | — | HEC write token (**only required input**) |
+| `SDL_REGION` | `us1` | region → `ingest.<region>.sentinelone.net` / `xdr.<region>.sentinelone.net` |
+| `SDL_READ_TOKEN` | — | optional; enables upstream read-back validation |
+| `SDL_HEC_ENDPOINT` / `SDL_READ_ENDPOINT` | from region | override the full endpoints |
 | `SDL_SYSLOG_PORT` | `5514` | ingest port |
 | `SDL_COLLECTOR_IP` | auto | pin the advertised collector IP |
+| `SDL_HEC_HOST` | source device | force the HEC `host` (SDL serverHost); default is the originating device, never the relay |
 | `SDL_UDP_RCVBUF` | `8m` | imudp socket buffer request |
 | `SDL_UDP_RMEM_MAX` | `16777216` | host `net.core.rmem_max` target |
 | `SDL_PYTHON` | `/usr/bin/python3` | interpreter for the HEC helper |
