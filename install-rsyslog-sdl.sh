@@ -327,7 +327,9 @@ def hec_host(sysloghost, fromhost):
         return h
     return fromhost or h or 'unknown'
 
-headers = {'Content-Type': 'application/json', 'Authorization': 'Splunk ' + (token or '')}
+# SDL's HEC accepts both "Splunk <token>" and "Bearer <token>"; use Bearer — it's
+# the clearer, less product-specific scheme for customers reading their config.
+headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (token or '')}
 
 def post(payload):
     data=json.dumps(payload, separators=(',', ':')).encode()
