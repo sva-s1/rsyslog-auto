@@ -138,6 +138,18 @@ port_users() {
   fi
 }
 
+describe_port_user() {
+  # Turn an `ss -p` line into a friendly "appname (pid N)" for the customer.
+  local line="$1" name pid
+  name="$(sed -nE 's/.*users:\(\("([^"]+)".*/\1/p' <<<"$line")"
+  pid="$(sed -nE 's/.*\bpid=([0-9]+).*/\1/p' <<<"$line")"
+  if [[ -n "$name" ]]; then
+    printf "%s (pid %s)" "$name" "${pid:-?}"
+  else
+    printf "%s" "$line"   # fall back to raw ss line if we couldn't parse it
+  fi
+}
+
 check_ports_available_or_rsyslog() {
   log "Checking TCP/UDP $PORT ownership before configuring rsyslog"
   local offenders=""
@@ -151,12 +163,14 @@ check_ports_available_or_rsyslog() {
         log "$proto/$PORT currently owned by rsyslogd; stopping for deterministic reconfigure"
         systemctl stop rsyslog 2>/dev/null || true
       else
-        offenders+=$'\n'"$proto/$PORT: $line"
+        offenders+=$'\n'"  - $proto/$PORT is held by: $(describe_port_user "$line")"
       fi
     done <<< "$lines"
   done
   if [[ -n "$offenders" ]]; then
-    fail "Port $PORT is already in use by a non-rsyslog app:$offenders"
+    fail "Port $PORT is already in use by another application; halting before changing anything:$offenders
+
+Stop or reconfigure that application, or re-run with SDL_SYSLOG_PORT=<other-port> to use a different port."
   fi
 }
 
@@ -459,6 +473,64 @@ $LOG_DIR/*.log {
 EOF
 }
 
+configure_firewall() {
+  # Allow $PORT through the host firewall, but ONLY touch ufw if it is already
+  # installed AND active. Never install or enable ufw here: enabling it with the
+  # default deny-incoming policy would instantly cut the customer's SSH session.
+  if ! command -v ufw >/dev/null 2>&1; then
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+      log "NOTE: firewalld is active (no ufw). Allow $PORT/udp + $PORT/tcp there if remote senders are blocked."
+    else
+      log "No active host firewall (ufw) detected; nothing to open for $PORT."
+    fi
+    return 0
+  fi
+  # Authoritative live state — the customer's belief is irrelevant. Last call:
+  # they swore ufw was off; it was on and dropping UDP. And even when it IS off,
+  # a reboot/update can turn it back on — so we pre-stage the allow rule either
+  # way. 'ufw allow' persists to ufw's config and, while ufw is inactive, only
+  # records the rule without enabling the firewall. We NEVER run 'ufw enable'
+  # (that would apply the default deny-incoming and could cut the customer's SSH).
+  local active="inactive"
+  ufw status 2>/dev/null | grep -qiE '^Status:[[:space:]]*active' && active="ACTIVE"
+  log "FIREWALL: ufw is installed; live state = $active (authoritative on-box check)."
+  if [[ "$active" == "ACTIVE" ]]; then
+    log "         ufw IS filtering inbound traffic right now."
+  else
+    log "         ufw is off now, but a reboot/update can re-enable it — adding a persistent allow so $PORT survives that."
+  fi
+  local proto out
+  for proto in udp tcp; do
+    out="$(ufw allow "$PORT/$proto" 2>&1 || true)"
+    if printf '%s' "$out" | grep -qi 'skipping'; then
+      log "  $PORT/$proto: already allowed"
+    elif printf '%s' "$out" | grep -qiE 'added|updated'; then
+      log "  $PORT/$proto: persistent allow rule added"
+    else
+      log "  $PORT/$proto: ufw result: $(printf '%s' "$out" | tr '\n' ' ')"
+    fi
+  done
+  # Verify the rules persisted, using 'ufw show added' which works even when ufw
+  # is inactive (plain 'ufw status' lists nothing while disabled).
+  if ufw show added 2>/dev/null | grep -qiE "allow $PORT/udp" \
+     && ufw show added 2>/dev/null | grep -qiE "allow $PORT/tcp"; then
+    log "  verified: persistent ufw allow rules exist for $PORT/udp and $PORT/tcp (survive reboot + re-enable)"
+  else
+    log "  WARNING: could not confirm persistent ufw rules for $PORT — check 'ufw show added'"
+  fi
+}
+
+verify_port_reachable() {
+  # Confirm the TCP listener actually accepts a connection, using bash's built-in
+  # /dev/tcp so we never install a throwaway tester (telnet/nc) and have to clean
+  # it up. UDP has no connect semantics; run_smoke_test exercises the UDP path.
+  if timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT" 2>/dev/null; then
+    log "TCP/$PORT accepts connections (verified via built-in /dev/tcp; no tester installed)"
+  else
+    log "WARNING: could not open TCP 127.0.0.1:$PORT; check the listener and any host firewall before testing remotely"
+  fi
+}
+
 tune_udp_buffers() {
   # rsyslog imudp uses SO_RCVBUF (not SO_RCVBUFFORCE), so its rcvbufSize is
   # capped by net.core.rmem_max. Persist + apply a larger cap. In an
@@ -610,9 +682,11 @@ main() {
   write_apparmor_policy
   write_rsyslog_config
   write_logrotate
+  configure_firewall
   tune_udp_buffers
   validate_and_start_rsyslog
   verify_udp_rcvbuf
+  verify_port_reachable
   run_smoke_test
   log "DONE. rsyslog SDL ingest is active on TCP/UDP $PORT; local logs: $LOG_DIR"
   log "To test externally: ./send-rsyslog-sdl-test.sh <collector-ip> $PORT"
