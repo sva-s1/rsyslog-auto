@@ -1,0 +1,29 @@
+# --- Secrets: never commit credentials ---
+.env
+*.env
+!*.env.example
+sdl-hec.env
+
+# --- Generated at install/run time ---
+send-rsyslog-sdl-test.sh
+
+# --- Customer-identifying artifacts (keep OUT of a public repo) ---
+# Screenshots of live SDL events / customer topology — may contain real data.
+*.jpg
+*.jpeg
+*.png
+# Internal handoff notes (internal IPs, customer naming). Publish a clean README instead.
+CONTEXT.md
+# Claude Code working-context file: contains internal hostnames/IPs. Keep local.
+CLAUDE.md
+# Captured customer samples (real hostnames/dept names/IPs). Keep local.
+sanitized-syslog-samples.txt
+sanitized-test-events.txt
+
+# --- Symlink to the old private Codex project ---
+OTEL-Validation
+
+# --- OS / editor cruft ---
+.DS_Store
+*.swp
+*~
