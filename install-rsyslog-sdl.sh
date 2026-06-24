@@ -43,6 +43,10 @@ SDL_READ_TOKEN=
 # Optional: override the full endpoints (only for non-standard hosts).
 #SDL_HEC_ENDPOINT=
 #SDL_READ_ENDPOINT=
+# Optional: per-route HEC sourcetypes (SDL parser mapping). Defaults shown.
+#SDL_CATALYST_SOURCETYPE=cisco_catalyst
+#SDL_MERAKI_SOURCETYPE=cisco_meraki
+#SDL_UNKNOWN_SOURCETYPE=lab_unknown
 EOF
 }
 
@@ -84,8 +88,14 @@ load_or_prompt_env() {
   fi
 
   resolve_endpoints
+  # Per-route HEC sourcetypes (what SDL maps to a parser). Overridable in .env or
+  # env so you can point a route at a different parser without editing anything.
+  SDL_CATALYST_SOURCETYPE="${SDL_CATALYST_SOURCETYPE:-cisco_catalyst}"
+  SDL_MERAKI_SOURCETYPE="${SDL_MERAKI_SOURCETYPE:-cisco_meraki}"
+  SDL_UNKNOWN_SOURCETYPE="${SDL_UNKNOWN_SOURCETYPE:-lab_unknown}"
   case "${SDL_HEC_TOKEN:-}" in ''|*PASTE-YOUR-HEC*) fail "SDL_HEC_TOKEN is not set (still the placeholder?). Edit $SOURCE_ENV and re-run." ;; esac
   log "HEC ingest endpoint: $SDL_HEC_ENDPOINT"
+  log "Sourcetypes: catalyst=$SDL_CATALYST_SOURCETYPE meraki=$SDL_MERAKI_SOURCETYPE unknown=$SDL_UNKNOWN_SOURCETYPE"
   if [[ -z "${SDL_READ_TOKEN:-}" ]]; then
     log "WARNING: SDL_READ_TOKEN missing; install will validate local files only (skips upstream /api/query check)."
   fi
@@ -195,6 +205,9 @@ SDL_HEC_ENDPOINT=${SDL_HEC_ENDPOINT}
 SDL_HEC_TOKEN=${SDL_HEC_TOKEN}
 SDL_READ_ENDPOINT=${SDL_READ_ENDPOINT:-}
 SDL_READ_TOKEN=${SDL_READ_TOKEN:-}
+SDL_CATALYST_SOURCETYPE=${SDL_CATALYST_SOURCETYPE:-cisco_catalyst}
+SDL_MERAKI_SOURCETYPE=${SDL_MERAKI_SOURCETYPE:-cisco_meraki}
+SDL_UNKNOWN_SOURCETYPE=${SDL_UNKNOWN_SOURCETYPE:-lab_unknown}
 EOF
   chown root:adm "$ENV_FILE" 2>/dev/null || true
   chmod 0640 "$ENV_FILE"
@@ -468,7 +481,7 @@ ruleset(name="sdl_ingest") {
   # Catalyst IOS/NX-ish body signature: %FACILITY-SEV-MNEMONIC:
   if re_match(msg, "%[A-Z0-9_]+-[0-9]+-[A-Z0-9_]+:") then {
     action(type="omfile" file="$LOG_DIR/catalyst.log" template="sdlLocalLine")
-    action(type="omprog" name="sdl_hec_catalyst" binary="$pyrun catalyst cisco_catalyst $LOG_DIR/catalyst.log" template="sdlProgLine")
+    action(type="omprog" name="sdl_hec_catalyst" binary="$pyrun catalyst $SDL_CATALYST_SOURCETYPE $LOG_DIR/catalyst.log" template="sdlProgLine")
     stop
   }
 
@@ -477,13 +490,13 @@ ruleset(name="sdl_ingest") {
   # as RFC3164/RFC5424, so body matching is safer than hostname/IP fields.
   if msg contains " events type=" then {
     action(type="omfile" file="$LOG_DIR/meraki.log" template="sdlLocalLine")
-    action(type="omprog" name="sdl_hec_meraki" binary="$pyrun meraki cisco_meraki $LOG_DIR/meraki.log" template="sdlProgLine")
+    action(type="omprog" name="sdl_hec_meraki" binary="$pyrun meraki $SDL_MERAKI_SOURCETYPE $LOG_DIR/meraki.log" template="sdlProgLine")
     stop
   }
 
   # Catch-all: still write locally and forward to SDL unknown parser.
   action(type="omfile" file="$LOG_DIR/unknown.log" template="sdlLocalLine")
-  action(type="omprog" name="sdl_hec_unknown" binary="$pyrun unknown lab_unknown $LOG_DIR/unknown.log" template="sdlProgLine")
+  action(type="omprog" name="sdl_hec_unknown" binary="$pyrun unknown $SDL_UNKNOWN_SOURCETYPE $LOG_DIR/unknown.log" template="sdlProgLine")
 }
 EOF
   # The heredoc uses STX placeholders so bash does not expand rsyslog variables.

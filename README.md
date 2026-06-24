@@ -57,7 +57,11 @@ No secrets are baked into the script; it's safe to host publicly.
   reliably):
   - Catalyst IOS/NX signature `%FACILITY-SEV-MNEMONIC:` → `cisco_catalyst`
   - Wireless/AP bodies containing ` events type=` → `cisco_meraki`
-  - everything else → catch-all `unknown`
+  - everything else → catch-all (`lab_unknown`)
+
+  Each route's HEC sourcetype is overridable so you can point it at a different
+  SDL parser without editing the script: `SDL_CATALYST_SOURCETYPE`,
+  `SDL_MERAKI_SOURCETYPE`, `SDL_UNKNOWN_SOURCETYPE`.
 - **Local copies** in `/var/log/sdl-rsyslog/{catalyst,meraki,unknown}.log` with a
   12-month `logrotate` policy.
 - **HEC forwarding** via a small Python helper (`omprog`) that emits one JSON
@@ -151,6 +155,9 @@ ss -lnutp | grep 5514                            # is rsyslog bound to the port?
 | `SDL_REGION` | `us1` | region → `ingest.<region>.sentinelone.net` / `xdr.<region>.sentinelone.net` |
 | `SDL_READ_TOKEN` | — | optional; enables upstream read-back validation |
 | `SDL_HEC_ENDPOINT` / `SDL_READ_ENDPOINT` | from region | override the full endpoints |
+| `SDL_CATALYST_SOURCETYPE` | `cisco_catalyst` | Catalyst route sourcetype (SDL parser) |
+| `SDL_MERAKI_SOURCETYPE` | `cisco_meraki` | Meraki route sourcetype (SDL parser) |
+| `SDL_UNKNOWN_SOURCETYPE` | `lab_unknown` | catch-all route sourcetype (SDL parser) |
 | `SDL_SYSLOG_PORT` | `5514` | ingest port |
 | `SDL_COLLECTOR_IP` | auto | pin the advertised collector IP |
 | `SDL_HEC_HOST` | source device | force the HEC `host` (SDL serverHost); default is the originating device, never the relay |
