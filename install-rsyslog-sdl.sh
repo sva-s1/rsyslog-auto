@@ -68,6 +68,9 @@ load_or_prompt_env() {
   #   4. interactive prompt ->  answer one masked token prompt
   #   5. none + no TTY      ->  write a .env template and tell them what to fill
   # The customer never types an endpoint (resolve_endpoints defaults them).
+  # Capture explicit env-var sourcetype overrides BEFORE sourcing any file, so an
+  # env override wins over a value persisted in a prior install's sdl-hec.env.
+  local _env_cat="${SDL_CATALYST_SOURCETYPE:-}" _env_mer="${SDL_MERAKI_SOURCETYPE:-}" _env_unk="${SDL_UNKNOWN_SOURCETYPE:-}"
   if [[ -n "${SDL_HEC_TOKEN:-}" ]]; then
     log "Using SDL token from the environment (no prompts)"
   elif [[ -f "$SOURCE_ENV" ]]; then
@@ -90,9 +93,9 @@ load_or_prompt_env() {
   resolve_endpoints
   # Per-route HEC sourcetypes (what SDL maps to a parser). Overridable in .env or
   # env so you can point a route at a different parser without editing anything.
-  SDL_CATALYST_SOURCETYPE="${SDL_CATALYST_SOURCETYPE:-cisco_catalyst}"
-  SDL_MERAKI_SOURCETYPE="${SDL_MERAKI_SOURCETYPE:-cisco_meraki}"
-  SDL_UNKNOWN_SOURCETYPE="${SDL_UNKNOWN_SOURCETYPE:-lab_unknown}"
+  SDL_CATALYST_SOURCETYPE="${_env_cat:-${SDL_CATALYST_SOURCETYPE:-cisco_catalyst}}"
+  SDL_MERAKI_SOURCETYPE="${_env_mer:-${SDL_MERAKI_SOURCETYPE:-cisco_meraki}}"
+  SDL_UNKNOWN_SOURCETYPE="${_env_unk:-${SDL_UNKNOWN_SOURCETYPE:-lab_unknown}}"
   case "${SDL_HEC_TOKEN:-}" in ''|*PASTE-YOUR-HEC*) fail "SDL_HEC_TOKEN is not set (still the placeholder?). Edit $SOURCE_ENV and re-run." ;; esac
   log "HEC ingest endpoint: $SDL_HEC_ENDPOINT"
   log "Sourcetypes: catalyst=$SDL_CATALYST_SOURCETYPE meraki=$SDL_MERAKI_SOURCETYPE unknown=$SDL_UNKNOWN_SOURCETYPE"
